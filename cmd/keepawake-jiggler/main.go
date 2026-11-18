@@ -45,7 +45,7 @@ func run() error {
 		displaySlee     = flag.Bool("display-sleep", false, "also keep the display awake, not just the system")
 		listTargetsFlag = flag.Bool("list-targets", false, "list the windows a nudge can be aimed at, then exit")
 		hidFocus        = flag.Bool("hid-focus", false, "macOS: bring the target forward, send real pointer and key input, then restore focus (needed for Citrix/VDI)")
-		hidKey          = flag.String("key", "f15", "key tapped by -hid-focus: f15 or shift")
+		hidKey          = flag.String("key", "ctrl", "key tapped by -hid-focus: ctrl, shift or f16-f19 (F13-F15 are refused: brightness / Print Screen)")
 	)
 	flag.Parse()
 

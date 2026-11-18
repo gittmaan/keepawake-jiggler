@@ -22,7 +22,13 @@ static int activate_pid(int pid) {
 
 // post_key_event posts one key press or release to the HID tap, so the
 // frontmost application (the Citrix viewer) sees it as real keyboard input.
-static int post_key_event(unsigned short code, int down) {
+//
+// Modifier keys (Shift, Control) are not ordinary key-down events on a real
+// keyboard: the hardware reports a "flags changed" event whose flags say
+// whether the modifier is now held. modifier_mask is that flag for modifier
+// keys and 0 for ordinary keys, so modifiers are posted the way hardware
+// posts them.
+static int post_key_event(unsigned short code, int down, unsigned long long modifier_mask) {
 	CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
 	if (src == NULL) {
 		return 0;
@@ -31,6 +37,10 @@ static int post_key_event(unsigned short code, int down) {
 	CFRelease(src);
 	if (e == NULL) {
 		return 0;
+	}
+	if (modifier_mask != 0) {
+		CGEventSetType(e, kCGEventFlagsChanged);
+		CGEventSetFlags(e, down ? (CGEventFlags)modifier_mask : (CGEventFlags)0);
 	}
 	CGEventPost(kCGHIDEventTap, e);
 	CFRelease(e);
@@ -53,11 +63,26 @@ import (
 	"keepawake-jiggler/internal/core"
 )
 
-// Virtual key codes (Carbon kVK_*). F15 and Shift do nothing visible in
-// Windows, but both count as keyboard activity for its idle timer.
-const (
-	keyShift = 56
-	keyF15   = 113
+// keySpec is one key the nudge can tap: its Carbon virtual key code and, for
+// modifier keys, the CGEventFlags mask that goes with it.
+type keySpec struct {
+	code uint16
+	mask uint64
+}
+
+// The keys below count as keyboard activity in Windows but do nothing
+// visible on either side. Keys that are deliberately NOT offered:
+//   - F14 / F15: Brightness Down / Up on Mac keyboards (F15 raised the
+//     screen brightness on every nudge).
+//   - F13: Print Screen in Windows, which overwrites the clipboard.
+//   - F14: Scroll Lock in Windows.
+var (
+	keyControl = keySpec{code: 59, mask: 0x40000} // kVK_Control, kCGEventFlagMaskControl
+	keyShift   = keySpec{code: 56, mask: 0x20000} // kVK_Shift,   kCGEventFlagMaskShift
+	keyF16     = keySpec{code: 106}
+	keyF17     = keySpec{code: 64}
+	keyF18     = keySpec{code: 79}
+	keyF19     = keySpec{code: 80}
 )
 
 const (
@@ -72,19 +97,29 @@ const (
 	focusSettle = 150 * time.Millisecond
 )
 
-func keyCode(name string) (uint16, error) {
+func keyFor(name string) (keySpec, error) {
 	switch strings.ToLower(name) {
-	case "", "f15":
-		return keyF15, nil
+	case "", "ctrl", "control":
+		return keyControl, nil
 	case "shift":
 		return keyShift, nil
+	case "f16":
+		return keyF16, nil
+	case "f17":
+		return keyF17, nil
+	case "f18":
+		return keyF18, nil
+	case "f19":
+		return keyF19, nil
+	case "f13", "f14", "f15":
+		return keySpec{}, fmt.Errorf("-key %q is not allowed: F14/F15 are the Mac brightness keys, F13 is Print Screen and F14 is Scroll Lock in Windows (use ctrl, shift or f16-f19)", name)
 	}
-	return 0, fmt.Errorf("unknown -key %q (use f15 or shift)", name)
+	return keySpec{}, fmt.Errorf("unknown -key %q (use ctrl, shift or f16-f19)", name)
 }
 
 // CheckKey validates a -key value before any nudge is attempted.
 func (b *Backend) CheckKey(key string) error {
-	_, err := keyCode(key)
+	_, err := keyFor(key)
 	return err
 }
 
@@ -123,7 +158,7 @@ func (b *Backend) largestWindow(t core.Target) (core.Rect, bool) {
 // back. Because the events come from the real event stream while the viewer
 // is frontmost, the Citrix viewer forwards them to the remote session.
 func (b *Backend) FocusNudge(t core.Target, key string) error {
-	code, err := keyCode(key)
+	spec, err := keyFor(key)
 	if err != nil {
 		return err
 	}
@@ -173,11 +208,13 @@ func (b *Backend) FocusNudge(t core.Target, key string) error {
 	}
 	time.Sleep(focusSettle)
 
-	if C.post_key_event(C.ushort(code), 1) == 0 {
+	mask := C.ulonglong(spec.mask)
+	if C.post_key_event(C.ushort(spec.code), 1, mask) == 0 {
 		return errors.New("could not post the key event")
 	}
 	time.Sleep(50 * time.Millisecond)
-	C.post_key_event(C.ushort(code), 0)
+	// Always release, so a modifier is never left held down.
+	C.post_key_event(C.ushort(spec.code), 0, mask)
 	time.Sleep(focusSettle)
 	return nil
 }
